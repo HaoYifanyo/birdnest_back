@@ -10,9 +10,12 @@ import com.thoughtworks.xstream.security.AnyTypePermission;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
 @Service
@@ -22,6 +25,17 @@ public class BirdNestService {
 
     private static final String dronesUrl = "https://assignments.reaktor.com/birdnest/drones";
     private static final String pilotUrl = "https://assignments.reaktor.com/birdnest/pilots/";
+
+    // Run every 2 seconds
+    @Scheduled(cron = "*/2 * * * * ?")
+    public void scheduledTask(){
+        List<Drone> allDroneList = getDrones();
+        List<Drone> dronesViolatedNDZ = getDronesViolatedNDZ(allDroneList);
+        if(!dronesViolatedNDZ.isEmpty()){
+            System.out.println(dronesViolatedNDZ);
+        }
+
+    }
 
     public List<Drone> getDrones(){
         String xml = (String) doGet(dronesUrl).getBody();
@@ -35,6 +49,23 @@ public class BirdNestService {
         Report report = (Report) x.fromXML(xml);
 
         return report.getCapture();
+    }
+
+    public List<Drone> getDronesViolatedNDZ(List<Drone> droneList){
+        List<Drone> dronesViolatedNDZ = new ArrayList<>();
+        Double originX = 250000d;
+        Double originY = 250000d;
+        Double NDZDistance = 100000d;
+        for (Drone drone : droneList) {
+            Double droneX = drone.getPositionX();
+            Double droneY = drone.getPositionY();
+            Double distance = Math.sqrt((droneX - originX) * (droneX - originX) + (droneY - originY) * (droneY - originY));
+            if(distance.compareTo(NDZDistance) == -1){
+                drone.setDistance(distance/1000);
+                dronesViolatedNDZ.add(drone);
+            }
+        }
+        return dronesViolatedNDZ;
     }
 
     public Pilot getPilot(String serialNumber){
