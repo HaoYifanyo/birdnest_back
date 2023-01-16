@@ -13,10 +13,16 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable;
+import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
+import java.time.LocalDateTime;
+import java.util.*;
 
 @Service
 public class BirdNestService {
@@ -33,6 +39,17 @@ public class BirdNestService {
         List<Drone> dronesViolatedNDZ = getDronesViolatedNDZ(allDroneList);
         if(!dronesViolatedNDZ.isEmpty()){
             System.out.println(dronesViolatedNDZ);
+
+            Map<String, Object> resultMap = buildDynamoDbClient();
+            DynamoDbEnhancedClient enhancedClient = (DynamoDbEnhancedClient) resultMap.get("enhancedClient");
+            DynamoDbClient ddb = (DynamoDbClient) resultMap.get("ddb");
+
+            for (Drone drone : dronesViolatedNDZ) {
+                Pilot pilot = getPilot(drone.getSerialNumber(), drone.getReportTime());
+                putRecord(enhancedClient, pilot) ;
+//                System.out.println(pilot.getPilotId()+drone.getSerialNumber());
+            }
+            ddb.close();
         }
 
     }
@@ -48,7 +65,13 @@ public class BirdNestService {
         x.alias("capture", List.class);
         Report report = (Report) x.fromXML(xml);
 
-        return report.getCapture();
+        // set report time
+        LocalDateTime now = LocalDateTime.now();
+        List<Drone> droneList = report.getCapture();
+        for (Drone drone : droneList) {
+            drone.setReportTime(now);
+        }
+        return droneList;
     }
 
     public List<Drone> getDronesViolatedNDZ(List<Drone> droneList){
@@ -68,7 +91,7 @@ public class BirdNestService {
         return dronesViolatedNDZ;
     }
 
-    public Pilot getPilot(String serialNumber){
+    public Pilot getPilot(String serialNumber, LocalDateTime reportTime){
         ResponseEntity responseEntity = doGet(pilotUrl + serialNumber);
         HttpStatus statusCode = responseEntity.getStatusCode();
         if(statusCode.equals(HttpStatus.NOT_FOUND)){
@@ -77,6 +100,8 @@ public class BirdNestService {
 
         String json = (String) responseEntity.getBody();
         Pilot pilot = JSONObject.parseObject(json, Pilot.class);
+        pilot.setReportTime(reportTime);
+        pilot.setExpireTime(reportTime.plusMinutes(10));
 
         return pilot;
     }
@@ -87,5 +112,39 @@ public class BirdNestService {
 //        String response = (String) responseEntity.getBody();
         return responseEntity;
     }
+
+
+    public Map<String, Object> buildDynamoDbClient(){
+        ProfileCredentialsProvider credentialsProvider = ProfileCredentialsProvider.create();
+        Region region = Region.US_EAST_1;
+        DynamoDbClient ddb = DynamoDbClient.builder()
+                .credentialsProvider(credentialsProvider)
+                .region(region)
+                .build();
+
+        DynamoDbEnhancedClient enhancedClient = DynamoDbEnhancedClient.builder()
+                .dynamoDbClient(ddb)
+                .build();
+
+        Map<String, Object> resultMap = new HashMap<>();
+        resultMap.put("ddb", ddb);
+        resultMap.put("enhancedClient", enhancedClient);
+        return resultMap;
+    }
+    public static void putRecord(DynamoDbEnhancedClient enhancedClient, Pilot pilot) {
+        try {
+            DynamoDbTable<Pilot> pilotTable = enhancedClient.table("pilot", TableSchema.fromBean(Pilot.class));
+
+            // Put the pilot data into an Amazon DynamoDB table.
+            pilotTable.putItem(pilot);
+
+        } catch (DynamoDbException e) {
+            System.err.println(e.getMessage());
+        }
+        // todo
+        System.out.println("Customer data added to the table with id id101");
+    }
+
+
 
 }
