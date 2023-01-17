@@ -20,7 +20,7 @@ class BirdnestBackApplicationTests {
     @Test
     void testGet() {
         List<Drone> droneList = birdNestService.getDrones();
-        birdNestService.getPilot(droneList.get(0).getSerialNumber(), drone.getReportTime());
+        birdNestService.getPilot(droneList.get(0));
 
     }
 

@@ -16,12 +16,16 @@ import org.springframework.web.client.RestTemplate;
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable;
+import software.amazon.awssdk.enhanced.dynamodb.Key;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
+import software.amazon.awssdk.enhanced.dynamodb.model.GetItemEnhancedRequest;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 
 @Service
@@ -45,9 +49,18 @@ public class BirdNestService {
             DynamoDbClient ddb = (DynamoDbClient) resultMap.get("ddb");
 
             for (Drone drone : dronesViolatedNDZ) {
-                Pilot pilot = getPilot(drone.getSerialNumber(), drone.getReportTime());
-                putRecord(enhancedClient, pilot) ;
-//                System.out.println(pilot.getPilotId()+drone.getSerialNumber());
+                Pilot newItem = getPilot(drone);
+                Pilot itemInDB = getItem(enhancedClient, drone.getSerialNumber());
+                if (null == itemInDB) {
+                    putRecord(enhancedClient, newItem) ;
+                } else if (newItem.getDistance().compareTo(itemInDB.getDistance()) <= 0) {
+                    modifyItem(enhancedClient, newItem);
+                } else if (newItem.getDistance().compareTo(itemInDB.getDistance()) > 0) {
+                    // If the new distance is bigger than the previous one, keep the previous distance in DB.
+                    Double minDistance = itemInDB.getDistance();
+                    newItem.setDistance(minDistance);
+                    modifyItem(enhancedClient, newItem);
+                }
             }
             ddb.close();
         }
@@ -83,7 +96,7 @@ public class BirdNestService {
             Double droneX = drone.getPositionX();
             Double droneY = drone.getPositionY();
             Double distance = Math.sqrt((droneX - originX) * (droneX - originX) + (droneY - originY) * (droneY - originY));
-            if(distance.compareTo(NDZDistance) == -1){
+            if(distance.compareTo(NDZDistance) < 0){
                 drone.setDistance(distance/1000);
                 dronesViolatedNDZ.add(drone);
             }
@@ -91,7 +104,9 @@ public class BirdNestService {
         return dronesViolatedNDZ;
     }
 
-    public Pilot getPilot(String serialNumber, LocalDateTime reportTime){
+    public Pilot getPilot(Drone drone){
+        String serialNumber =  drone.getSerialNumber();
+        LocalDateTime reportTime = drone.getReportTime();
         ResponseEntity responseEntity = doGet(pilotUrl + serialNumber);
         HttpStatus statusCode = responseEntity.getStatusCode();
         if(statusCode.equals(HttpStatus.NOT_FOUND)){
@@ -100,9 +115,11 @@ public class BirdNestService {
 
         String json = (String) responseEntity.getBody();
         Pilot pilot = JSONObject.parseObject(json, Pilot.class);
-        pilot.setReportTime(reportTime);
-        pilot.setExpireTime(reportTime.plusMinutes(10));
-
+        pilot.setSerialNumber(serialNumber);
+        pilot.setDistance(drone.getDistance());
+        pilot.setReportTime(reportTime.toString());
+        long expireTimestamp = reportTime.plusMinutes(3).toInstant(ZoneOffset.ofHours(2)).toEpochMilli()/1000;
+        pilot.setExpireTime(expireTimestamp);
         return pilot;
     }
 
@@ -131,6 +148,29 @@ public class BirdNestService {
         resultMap.put("enhancedClient", enhancedClient);
         return resultMap;
     }
+
+    public static Pilot getItem(DynamoDbEnhancedClient enhancedClient, String serialNumber) {
+
+        Pilot result = null;
+
+        try {
+            DynamoDbTable<Pilot> table = enhancedClient.table("pilot", TableSchema.fromBean(Pilot.class));
+            Key key = Key.builder()
+                    .partitionValue(serialNumber)
+                    .build();
+
+            // Get the item by using the key.
+            result = table.getItem(
+                    (GetItemEnhancedRequest.Builder requestBuilder) -> requestBuilder.key(key));
+            // todo
+            System.out.println("******* The value is " + result);
+
+        } catch (DynamoDbException e) {
+            System.err.println(e.getMessage());
+        }
+        return result;
+    }
+
     public static void putRecord(DynamoDbEnhancedClient enhancedClient, Pilot pilot) {
         try {
             DynamoDbTable<Pilot> pilotTable = enhancedClient.table("pilot", TableSchema.fromBean(Pilot.class));
@@ -142,7 +182,23 @@ public class BirdNestService {
             System.err.println(e.getMessage());
         }
         // todo
-        System.out.println("Customer data added to the table with id id101");
+        System.out.println("Customer data added to the table with SerialNumber" + pilot.getSerialNumber());
+    }
+
+    public static void modifyItem(DynamoDbEnhancedClient enhancedClient, Pilot pilot) {
+        try {
+
+            DynamoDbTable<Pilot> mappedTable = enhancedClient.table("pilot", TableSchema.fromBean(Pilot.class));
+            Key key = Key.builder()
+                    .partitionValue(pilot.getSerialNumber())
+                    .build();
+
+            // update.
+            mappedTable.updateItem(pilot);
+
+        } catch (DynamoDbException e) {
+            System.err.println(e.getMessage());
+        }
     }
 
 
